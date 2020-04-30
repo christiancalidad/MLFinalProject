@@ -1,0 +1,190 @@
+---
+title: "Machine Learning Final Project"
+author: "Christian Suarez"
+date: "29/4/2020"
+output: html_document
+---
+
+
+# Summary
+
+The goal of this project is to create a model for predicting if barbel lifts were correctly done, through variable 'classe' in our data set.
+Barbet lifts were done in 5 different ways by 6 persons, to model this we are going to use data from http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+
+
+
+```{r setup, echo = TRUE, include=TRUE,message=FALSE,error=FALSE}
+```
+
+```{r, echo = FALSE, include=FALSE}
+## Load libraries
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(corrplot)
+## Set seed to make it reproducible
+set.seed(5)
+```
+
+
+```{r}
+## Load data
+setwd("C:/Users/CHRISTIAN/Desktop/Coursera/Specialization/2/ML/FinalProject")
+data<-read.csv('pml-training.csv',na.strings = c("NA","#DIV/0!"))
+
+
+## 20 observation from excercis as validation data set
+validate<-read.csv('pml-testing.csv',na.strings = c("NA","#DIV/0!"))
+dim(data)
+```
+# Prepare data and select variables
+
+## Split Data
+Split into train and test data sets using a proportion of 70%.
+
+
+```{r}
+temp <- createDataPartition(data$classe, p = 0.7, list=FALSE)
+train<-data[temp,]
+test<-data[-temp,]
+```
+
+## Analize  NAs
+
+This is necessary because a variable with a lot of NAs will be not usefull in our model. First, we are going to eliminate variables with more than 50% of NAs.
+```{r}
+remove<-!colSums(is.na(train))>nrow(train)/2
+train<-train[,remove]
+test<-test[,remove]
+validate<-validate[,remove]
+sum(complete.cases(train))/nrow(train)
+```
+
+## Eliminate variables with low variability
+
+```{r}
+nearZeroVar(train, names = TRUE)
+table(data$new_window)
+```
+
+As wee can see variable 'new_window' has a very low variability because almost all its observations belongs to one class, so we are going to exclude it.
+```{r}
+train<-train[,-6]
+test<-test[,-6]
+validate<-validate[,-6]
+```
+
+## Check if classes are balanced
+
+This is an important step because depending on this we must select the best accuracy meassure or we will need to balance the training data set.
+
+```{r}
+ggplot(data, aes(classe)) + geom_bar()
+```
+
+As we can see the classes are balanced, so we can use Accuracy as our metric and is not need to balance.
+```{r}
+metric <- "Accuracy"
+```
+
+
+
+# Define model
+
+We are looking for a model that can predict if any person in any moment is doing correctly barbel lifts, so we are going to exclude user and time variables.
+
+```{r}
+train<-train[,-c(1:5)]
+test<-test[,-c(1:5)]
+validate<-validate[,-c(1:5)]
+```
+
+## Analize correlation
+
+```{r}
+correlation <- cor(train[, -54])
+corrplot(correlation, method = "color", type = "lower", 
+         tl.cex = 0.8, tl.col = 'black')
+```
+
+Due to the logical correlation between diferent meassures of the same kind of data, it is neccesary to apply PCA to find the best combination of predictors, taking into account that in this case we are not looking for interpretability but accuracy
+
+## Apply PCA
+
+```{r}
+pca <- prcomp(train[,-54], scale. = T)
+variance<-pca$sdev^2
+proportion<-variance/sum(variance)
+plot(proportion, xlab = "Principal Component",
+     ylab = "Proportion of Variance Explained",
+     type = "b")
+```
+
+We can see that after 20 components increasse in explained variance is almost 0, so We are going to work with 24 components, wich explain 95% of variance
+
+```{r}
+sum(variance[1:24])/sum(variance)
+pcatrain<-data.frame(classe = train$classe,pca$x)
+pcatrain<-pcatrain[,1:25]
+```
+
+## Model with Random Forest
+
+### Tuning
+
+We are going to apply cross validation to avoid over fitting and try to optimize mtry hyperparameter and the number of trees.
+
+```{r}
+control <- trainControl(method="repeatedcv", number=3, repeats=2, search="grid")
+tunegrid <- expand.grid(.mtry=c(1:3))
+rf_gridsearch <- train(classe~., data=pcatrain, method="rf", 
+                       metric=metric, tuneGrid=tunegrid, trControl=control,ntree=300)
+print(rf_gridsearch)
+```
+
+We can see that there is no significant increasse in accuracy  by increassing the value of  mtry, so we will check what happen when we increasse the number of trees.
+
+
+```{r}
+control <- trainControl(method="repeatedcv", number=3, repeats=2, search="grid")
+tunegrid <- expand.grid(.mtry=1)
+rf_gridsearch1 <- train(classe~., data=pcatrain, method="rf", 
+                       metric=metric, tuneGrid=tunegrid, trControl=control,ntree=1500)
+print(rf_gridsearch1)
+```
+
+We can see, the accuracy is similar to the model with 300 trees, so we are going to work with the first one bacause It is faster.
+
+```{r}
+fit<-rf_gridsearch$finalModel
+fit
+```
+
+We can see that out of the bag error is low, so probably the model is not overfitted and will keep high accuracy with test data, so now we are going to check it.
+
+```{r}
+pcatest<-predict(pca,newdata = test[,-54])
+pcatest<-data.frame(classe = test$classe,pcatest)
+pcatest<-pcatest[,1:25]
+prediction<-predict(fit,pcatest[,-1],type = 'response')
+confusionMatrix(prediction,pcatest$classe)
+```
+As we expect the model has a good performance in testing data, so this is our final model.
+
+## Predicting the 20 given observations.
+
+```{r}
+pcavalidate<-predict(pca,newdata = validate[,-54])
+pcavalidate<-data.frame(id= validate$problem_id,pcavalidate)
+pcavalidate<-pcavalidate[,1:25]
+prediction<-predict(fit,pcavalidate[,-1],type = 'response')
+answers<-data.frame(ID= pcavalidate$id,prediction = prediction)
+answers
+```
+
+
+
+
